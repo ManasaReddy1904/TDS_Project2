@@ -1,159 +1,187 @@
-import pandas as pd
-import json
-import requests
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#   "pandas",
+#   "seaborn",
+#   "matplotlib",
+#   "openai",
+#   "argparse",
+#   "numpy",
+#   "scipy",
+#   "scikit-learn"
+# ]
+# ///
+
 import os
-from dotenv import load_dotenv
-import matplotlib.pyplot as plt
-import seaborn as sns
 import argparse
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+import openai
+import numpy as np
+from sklearn.cluster import KMeans
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import StandardScaler
+from datetime import datetime
+import requests
 
-load_dotenv()
-AIPROXY_TOKEN = os.environ("AIPROXY_TOKEN")
+# Fetch the AI Proxy Token from environment variables
+API_TOKEN = os.environ.get("AIPROXY_TOKEN")
+if not API_TOKEN:
+    raise EnvironmentError("AIPROXY_TOKEN environment variable is not set.")
 
-if not AIPROXY_TOKEN:
-    raise Exception("API key not found. Please set AIPROXY_TOKEN in your .env file.")
+PROXY_URL = "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
 
-def load_dataset(file_path):
-    """Loads a dataset from a CSV file."""
+# Command-line argument setup
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="Automated analysis and narration of a dataset.")
+    parser.add_argument("dataset", type=str, help="Path to the CSV file to analyze.")
+    return parser.parse_args()
+
+# Load the dataset
+def load_dataset(filepath):
     try:
-        df = pd.read_csv(file_path, encoding='latin1')
-        print(f"Dataset loaded successfully. Shape: {df.shape}")
+        df = pd.read_csv(filepath)
         return df
     except Exception as e:
-        raise RuntimeError(f"Error loading dataset: {e}")
+        raise FileNotFoundError(f"Error loading dataset: {e}")
 
-def visualize_data(df, output_dir):
-    """Generates and saves a correlation heatmap."""
-    try:
-        correlation = df.corr(numeric_only=True)
-        plt.figure(figsize=(12, 8))
-        sns.heatmap(correlation, annot=True, cmap='coolwarm')
+# Basic dataset analysis
+def basic_analysis(df):
+    analysis = {
+        "shape": df.shape,
+        "columns": df.dtypes.to_dict(),
+        "missing_values": df.isnull().sum().to_dict(),
+        "summary_statistics": df.describe(include='all').to_dict(),
+    }
+    return analysis
 
-        # Save the plot as a PNG file with dataset name
-        heatmap_filename = os.path.join(output_dir, f"{output_dir}.png")
-        plt.savefig(heatmap_filename)
+# Advanced analysis: Clustering
+def cluster_analysis(df):
+    numerical_df = df.select_dtypes(include=["number"]).dropna()
+    if numerical_df.shape[1] > 1:
+        scaler = StandardScaler()
+        scaled_data = scaler.fit_transform(numerical_df)
+        kmeans = KMeans(n_clusters=3, random_state=42)
+        clusters = kmeans.fit_predict(scaled_data)
+        df['Cluster'] = clusters
+        plt.figure(figsize=(10, 8))
+        sns.scatterplot(x=numerical_df.iloc[:, 0], y=numerical_df.iloc[:, 1], hue=clusters, palette="viridis")
+        plt.title("K-Means Clustering")
+        plt.savefig("cluster_analysis.png")
         plt.close()
+        return "cluster_analysis.png"
+    return None
 
-        print(f"Heatmap saved as {heatmap_filename}.")
-        return heatmap_filename
-    except Exception as e:
-        raise RuntimeError(f"Error generating heatmap: {e}")
-    
+# Advanced analysis: Regression
+def regression_analysis(df):
+    numerical_df = df.select_dtypes(include=["number"]).dropna()
+    if numerical_df.shape[1] > 1:
+        target = numerical_df.columns[-1]
+        X = numerical_df.drop(columns=[target])
+        y = numerical_df[target]
+        model = LinearRegression()
+        model.fit(X, y)
+        coefficients = dict(zip(X.columns, model.coef_))
+        plt.figure(figsize=(10, 6))
+        sns.barplot(x=list(coefficients.keys()), y=list(coefficients.values()))
+        plt.title("Regression Coefficients")
+        plt.savefig("regression_analysis.png")
+        plt.close()
+        return "regression_analysis.png"
+    return None
 
-def analyze_data(df):
-    """Performs basic analysis on the dataset."""
+# Advanced analysis: Time Series
+def time_series_analysis(df):
+    if any(df.dtypes == "datetime64[ns]"):
+        datetime_col = df.select_dtypes(include=["datetime64[ns]"]).columns[0]
+        df.set_index(datetime_col, inplace=True)
+        if df.index.is_all_dates:
+            numerical_df = df.select_dtypes(include=["number"]).dropna()
+            for col in numerical_df.columns:
+                plt.figure(figsize=(12, 6))
+                sns.lineplot(x=numerical_df.index, y=numerical_df[col])
+                plt.title(f"Time Series Analysis: {col}")
+                plt.savefig(f"time_series_{col}.png")
+                plt.close()
+            return [f"time_series_{col}.png" for col in numerical_df.columns]
+    return []
+
+# Generate visualizations
+def create_visualizations(df):
+    visuals = []
+    # Correlation heatmap
+    if df.select_dtypes(include=["number"]).shape[1] > 1:
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(df.corr(), annot=True, cmap="coolwarm", fmt=".2f")
+        plt.title("Correlation Matrix")
+        plt.savefig("correlation_matrix.png")
+        plt.close()
+        visuals.append("correlation_matrix.png")
+
+    # Advanced visualizations
+    cluster_visual = cluster_analysis(df)
+    if cluster_visual:
+        visuals.append(cluster_visual)
+
+    regression_visual = regression_analysis(df)
+    if regression_visual:
+        visuals.append(regression_visual)
+
+    time_series_visuals = time_series_analysis(df)
+    visuals.extend(time_series_visuals)
+
+    return visuals
+
+# Interact with the LLM
+def interact_with_llm(prompt):
     try:
-        analysis = {
-            "num_rows": len(df),
-            "num_columns": len(df.columns),
-            "missing_values": df.isnull().sum().to_dict(),
-            "column_types": df.dtypes.astype(str).to_dict(),
-            "summary_statistics": df.describe(include='all').to_dict()
+        headers = {
+            "Authorization": f"Bearer {API_TOKEN}",
+            "Content-Type": "application/json"
         }
-        print("Data analysis completed.")
-        return analysis
-    except Exception as e:
-        raise RuntimeError(f"Error during data analysis: {e}")
-
-def llm_summary(analysis):
-    """Generates a summary of the dataset using an LLM."""
-
-    url = "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {AIPROXY_TOKEN}"
-    }
-
-    prompt = f"""
-    Analyze the following dataset metadata and provide insights:
-    {json.dumps(analysis, indent=2)}
-    """
-
-    payload = {
-        "model": "gpt-4o-mini",
-        "messages": [
-            {"role": "system", "content": "You are a data analyst."},
-            {"role": "user", "content": prompt}
-        ]
-    }
-
-    response = requests.post(url, headers=headers, json=payload)
-
-    if response.status_code == 200:
+        payload = {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "system", "content": "You are an expert data analyst."},
+                {"role": "user", "content": prompt}
+            ]
+        }
+        response = requests.post(PROXY_URL, headers=headers, json=payload)
+        response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"]
-    else:
-        raise Exception(f"Request failed: {response.status_code}, {response.text}")
+    except Exception as e:
+        raise RuntimeError(f"Error interacting with LLM: {e}")
 
-def save_to_readme(heatmap_filename, analysis, summary, output_dir):
-    """Saves analysis results and summary to a README.md file."""
-    os.makedirs(output_dir, exist_ok=True)
+# Generate Markdown report
+def generate_readme(analysis, visuals):
+    with open("README.md", "w") as f:
+        f.write("# Automated Data Analysis\n\n")
+        f.write("## Summary of Analysis\n\n")
+        f.write(f"**Dataset Shape**: {analysis['shape']}\n\n")
+        f.write("### Missing Values\n\n")
+        for col, count in analysis['missing_values'].items():
+            f.write(f"- {col}: {count} missing values\n")
+        f.write("\n### Summary Statistics\n\n")
+        for col, stats in analysis['summary_statistics'].items():
+            f.write(f"#### {col}\n")
+            for stat, value in stats.items():
+                f.write(f"- {stat}: {value}\n")
+        f.write("\n### Visualizations\n\n")
+        for visual in visuals:
+            f.write(f"![{visual}]({visual})\n")
 
-    readme_content = f"""
-# Data Analysis Report
-
-## Correlation Heatmap
-![Heatmap](./{os.path.basename(heatmap_filename)})
-
-## Analysis Results
-**Number of Rows:** {analysis["num_rows"]}  
-**Number of Columns:** {analysis["num_columns"]}  
-
-### Missing Values:
-```json
-{json.dumps(analysis["missing_values"], indent=2)}
-```
-
-### Column Types:
-```json
-{json.dumps(analysis["column_types"], indent=2)}
-```
-
-### Summary Statistics:
-```json
-{json.dumps(analysis["summary_statistics"], indent=2)}
-```
-
-## Summary
-{summary}
-"""
-
-    readme_filename = os.path.join(output_dir, "README.md")
-
-    with open(readme_filename, "w", encoding="utf-8") as f:
-        f.write(readme_content)
-
-    print(f"Results saved in {readme_filename}")
-
+# Main script
 def main():
-    parser = argparse.ArgumentParser(description="Automated data analysis and reporting.")
-    parser.add_argument("file_path", help="Path to the CSV file to analyze.")
-    args = parser.parse_args()
+    args = parse_arguments()
+    df = load_dataset(args.dataset)
+    analysis = basic_analysis(df)
+    visuals = create_visualizations(df)
 
-    file_path = args.file_path
+    prompt = "Provide a narrative analysis of the following data: \n" + str(analysis)
+    narrative = interact_with_llm(prompt)
 
-    # Get dataset name without extension
-    df = os.path.splitext(os.path.basename(file_path))[0]
-
-    # Create subfolder for the dataset in the current directory
-    dataset_folder = os.path.join(os.getcwd(), df)
-
-    # Ensure the folder exists
-    os.makedirs(dataset_folder, exist_ok=True)
-
-    # Step 1: Load the dataset
-    df = load_dataset(file_path)
-
-    # Step 2: Visualize the data
-    heatmap_filename = visualize_data(df, dataset_folder)
-
-    # Step 3: Analyze the data
-    analysis = analyze_data(df)
-
-    # Step 4: Generate a summary using LLM
-    summary = llm_summary(analysis)
-
-    # Step 5: Save everything to README.md in the dataset's folder
-    save_to_readme(heatmap_filename, analysis, summary, dataset_folder)
+    generate_readme(analysis, visuals)
 
 if __name__ == "__main__":
     main()
